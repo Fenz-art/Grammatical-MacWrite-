@@ -1,0 +1,22 @@
+.semantic-export-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; }
+
+.semantic-export {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  width: fit-content;
+  margin: 0;
+  padding: 5px 9px;
+  border: 1px solid rgba(116, 183, 255, .22);
+  border-radius: 6px;
+  background: rgba(116, 183, 255, .07);
+  color: #a9d3ff;
+  font: 600 10px/1.2 Inter, system-ui, sans-serif;
+  cursor: pointer;
+  transition: background 160ms ease-out, border-color 160ms ease-out, transform 160ms ease-out;
+}
+
+.semantic-export:hover { background: rgba(116, 183, 255, .15); border-color: rgba(116, 183, 255, .36); }
+.semantic-export:active { transform: scale(.97); }
+.semantic-export:focus-visible { outline: 2px solid #78baff; outline-offset: 2px; }
