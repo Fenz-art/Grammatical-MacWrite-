@@ -1,0 +1,23 @@
+.markdown-preview-panel { margin-top: 8px; border: 1px solid rgba(121,179,240,.17); border-radius: 8px; background: rgba(5,16,30,.32); overflow: hidden; font-family: Inter, system-ui, sans-serif; }
+.markdown-preview-panel summary { display: flex; align-items: center; gap: 7px; min-height: 32px; padding: 0 10px; cursor: pointer; list-style: none; color: #cce5ff; font: 700 10px/1 Inter, system-ui, sans-serif; }
+.markdown-preview-panel summary::-webkit-details-marker { display: none; }
+.markdown-preview-panel summary > span, .markdown-preview-panel summary small { display: inline-flex; align-items: center; gap: 6px; }
+.markdown-preview-panel summary small { margin-left: auto; color: #85a4c6; font: 9px/1 Inter, system-ui, sans-serif; }
+.markdown-preview-grid { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); border-top: 1px solid rgba(255,255,255,.06); }
+.markdown-source-pane, .markdown-render-pane { min-width: 0; min-height: 120px; }
+.markdown-source-pane { border-right: 1px solid rgba(255,255,255,.07); background: rgba(0,5,13,.25); }
+.markdown-source-pane header, .markdown-render-pane header { display: flex; align-items: center; gap: 6px; padding: 7px 9px; border-bottom: 1px solid rgba(255,255,255,.06); color: #88a7c7; text-transform: uppercase; letter-spacing: .06em; font: 700 8px/1 Inter, system-ui, sans-serif; }
+.markdown-source-pane pre { max-height: 315px; overflow: auto; margin: 0; padding: 10px; white-space: pre-wrap; overflow-wrap: anywhere; color: #b9d0e8; font: 10px/1.5 "JetBrains Mono", ui-monospace, monospace; }
+.markdown-render-pane article { max-height: 315px; overflow: auto; padding: 10px 12px; color: #dceaff; font-size: 11px; line-height: 1.6; }
+.markdown-render-pane article :is(h1,h2,h3,h4) { margin: 8px 0 5px; color: #eff7ff; line-height: 1.25; }
+.markdown-render-pane article h1 { font-size: 17px; }.markdown-render-pane article h2 { font-size: 15px; }.markdown-render-pane article h3 { font-size: 13px; }
+.markdown-render-pane article p { margin: 5px 0; }
+.markdown-code-card { overflow: hidden; margin: 8px 0; border: 1px solid rgba(116,183,255,.18); border-radius: 7px; background: rgba(0,5,12,.58); }
+.markdown-code-card > span { display: block; padding: 5px 9px; border-bottom: 1px solid rgba(116,183,255,.12); color: #7db9ec; text-transform: uppercase; letter-spacing: .08em; font: 700 8px/1 "JetBrains Mono", ui-monospace, monospace; }
+.markdown-render-pane article pre { overflow: auto; margin: 0; padding: 10px; color: #c7ebff; }
+.markdown-render-pane article code { font: 9px/1.45 "JetBrains Mono", ui-monospace, monospace; }
+.markdown-render-pane article :not(pre) > code { padding: 1px 4px; border-radius: 4px; background: rgba(113,177,235,.14); color: #c7ebff; }
+.markdown-render-pane article table { width: 100%; border-collapse: collapse; font-size: 10px; }.markdown-render-pane article th, .markdown-render-pane article td { padding: 5px; border: 1px solid rgba(139,188,241,.16); text-align: left; }.markdown-render-pane article th { color: #d2e9ff; background: rgba(74,133,195,.12); }
+.markdown-render-pane article a { color: #84c9ff; }.markdown-render-pane article blockquote { margin: 6px 0; padding-left: 8px; border-left: 2px solid rgba(133,196,255,.5); color: #a9c4dd; }
+.markdown-preview-footnote { padding: 7px 10px; border-top: 1px solid rgba(255,255,255,.06); color: #82a2c0; font: 9px/1.4 Inter, system-ui, sans-serif; }
+@media (max-width: 720px) { .markdown-preview-grid { grid-template-columns: 1fr; }.markdown-source-pane { border-right: 0; border-bottom: 1px solid rgba(255,255,255,.07); } }
