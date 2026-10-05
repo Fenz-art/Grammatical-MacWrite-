@@ -13,7 +13,7 @@ Grammatical treats a transformation as an evidence-preserving workflow. A userâ€
 
 | Control | Enforced value | Behavior | Operator action |
 |---|---:|---|---|
-| Authentication | Required | Transformation and fleet telemetry routes require a valid Manus OAuth session. | Investigate only repeated account/session errors; never ask users to share cookies or tokens. |
+| Authentication | Required | Transformation and fleet telemetry routes require a valid email/password account session. | Investigate repeated account/session errors; never ask users to share passwords, cookies, or tokens. |
 | Per-user short-window quota | 20 transformations/minute | Admission is rejected before provider work; the route sets `Retry-After`. | Check traffic patterns and whether the threshold remains appropriate for the tier. |
 | Per-user daily quota | 200 transformations/day | Admission is rejected before provider work; the source stays in the terminal prompt. | Review product quota policy before granting any exception. |
 | Fleet concurrency | 6 active transformation leases | A database-backed lease limits simultaneous provider work across autoscaled instances. Leases expire after 120 seconds as a recovery backstop. | Investigate sustained capacity rejections and stale lease patterns. |

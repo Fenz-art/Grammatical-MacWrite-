@@ -1,8 +1,12 @@
-import { invokeLLM, listLLMModels, type Message } from "./_core/llm";
+import { invokeLLM, LLMProviderError, type Message } from "./_core/llm";
+import { chooseRoute, outputTokenBudget, resolveConfiguredLLMSettings, scoreComplexity, type ComplexityScore, type ProviderConfig } from "./_core/llmProviders";
 import {
   TRANSFORMATION_MODE_LABELS,
   type TransformationIntensity,
   type TransformationMode,
+  type LlmProvenance,
+  type LlmUsage,
+  type TransformComplexity,
 } from "../shared/transformations";
 import { safePrefixByGrapheme } from "../shared/unicodeText";
 import { formatPassageSemanticContext, inferPassageSemanticContext } from "../shared/semanticContext";
@@ -26,28 +30,6 @@ const MODE_INSTRUCTIONS: Record<TransformationMode, string> = {
   rewrite:
     "Read and model the complete passage before rewriting. Reorganize and rephrase for stronger structure and readability while preserving facts, names, numbers, dates, negation, modality, entity identity, and intent. Keep each person, object, role, and relationship consistent across sentences. Correct context-determined grammatical forms and incomplete occupational or descriptive noun phrases when the intended meaning is clear; do not invent information or freeze a malformed phrase merely because it appears in the source.",
 };
-
-let preferredModel: Promise<string> | undefined;
-
-async function resolveTransformModel(): Promise<string> {
-  if (!preferredModel) {
-    preferredModel = listLLMModels()
-      .then(({ data }) => {
-        const model =
-          data.find(item => item.id === "gpt-5-mini") ??
-          data.find(item => item.id.startsWith("gpt-5-")) ??
-          data[0];
-        if (!model) throw new Error("No LLM model is available for transformation.");
-        return model.id;
-      })
-      .catch(error => {
-        // A catalog outage must not permanently cache a rejected promise.
-        preferredModel = undefined;
-        throw error;
-      });
-  }
-  return preferredModel;
-}
 
 function readTextContent(content: Message["content"] | null | undefined): string {
   if (typeof content === "string") return content.trim();
@@ -107,7 +89,45 @@ export function buildTransformMessages(text: string, mode: TransformationMode, i
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 function isRetryableProviderError(error: unknown) {
-  return error instanceof Error && /429|408|409|425|500|502|503|504|timeout|temporar|network|fetch/i.test(error.message);
+  if (error instanceof LLMProviderError) return [408, 409, 425, 429, 500, 502, 503, 504].includes(error.status);
+  return error instanceof Error && /timeout|temporar|network|fetch/i.test(error.message);
+}
+
+function normalizeUsage(response: Awaited<ReturnType<typeof invokeLLM>>): LlmUsage {
+  const usage = response.usage;
+  if (!usage) return {};
+  const promptTokens = usage.prompt_tokens;
+  const completionTokens = usage.completion_tokens;
+  const reasoningTokens = usage.reasoning_tokens ?? usage.completion_tokens_details?.reasoning_tokens;
+  const cachedTokens = usage.prompt_tokens_details?.cached_tokens;
+  const cacheWriteTokens = usage.prompt_tokens_details?.cache_write_tokens;
+  return {
+    ...(promptTokens !== undefined ? { promptTokens } : {}),
+    ...(completionTokens !== undefined ? { completionTokens } : {}),
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+    ...(cachedTokens !== undefined ? { cachedTokens } : {}),
+    ...(cacheWriteTokens !== undefined ? { cacheWriteTokens } : {}),
+    ...(usage.total_tokens !== undefined ? { totalTokens: usage.total_tokens } : {}),
+    ...(typeof usage.cost === "number" ? { costUsd: usage.cost } : {}),
+  };
+}
+
+function addUsage(left: LlmUsage, right: LlmUsage): LlmUsage {
+  const keys: Array<keyof LlmUsage> = ["promptTokens", "completionTokens", "reasoningTokens", "cachedTokens", "cacheWriteTokens", "totalTokens", "costUsd"];
+  const sum = {} as LlmUsage;
+  for (const key of keys) {
+    const a = left[key];
+    const b = right[key];
+    if (typeof a === "number" || typeof b === "number") sum[key] = Math.max(0, Number(a ?? 0) + Number(b ?? 0));
+  }
+  return sum;
+}
+
+type PlainTransformResult = { text: string; model: string; provenance: LlmProvenance[]; usage: LlmUsage };
+
+function transformTierProvider(settings: ReturnType<typeof resolveConfiguredLLMSettings>, tier: string, name: string): ProviderConfig | undefined {
+  const allowedName = name as ProviderConfig["name"];
+  return settings.providers.find(provider => provider.name === allowedName && provider.enabled);
 }
 
 async function transformPlainText({
@@ -117,6 +137,7 @@ async function transformPlainText({
   protectedTerms,
   documentContext,
   codeCommentOnly,
+  complexity: suppliedComplexity,
 }: {
   text: string;
   mode: TransformationMode;
@@ -124,36 +145,86 @@ async function transformPlainText({
   protectedTerms?: string[];
   documentContext?: DocumentContext;
   codeCommentOnly?: boolean;
-}): Promise<{ text: string; model: string }> {
-  const model = await resolveTransformModel();
+  complexity?: ComplexityScore;
+}): Promise<PlainTransformResult> {
+  const settings = resolveConfiguredLLMSettings();
+  const complexity = suppliedComplexity ?? scoreComplexity({
+    document: parseStructuredDocument(text),
+    mode,
+    intensity,
+    protectedTerms,
+  });
+  const estimatedOutputTokens = outputTokenBudget(complexity.features.estimatedInputTokens, mode, intensity, settings.routing.maxEstimatedOutputTokens);
+  const decision = chooseRoute(settings, complexity, {
+    inputTokens: complexity.features.estimatedInputTokens,
+    outputTokens: estimatedOutputTokens,
+  });
+  const candidates: Array<{ provider: ProviderConfig; model: string; tier: string }> = [];
+  const primary = transformTierProvider(settings, decision.tier, decision.provider);
+  if (primary) candidates.push({ provider: primary, model: decision.model, tier: decision.tier });
+  for (const fallback of decision.fallbackProviders) {
+    const provider = transformTierProvider(settings, fallback.tier, fallback.provider);
+    if (provider && !candidates.some(candidate => candidate.provider.name === provider.name && candidate.model === fallback.model)) {
+      candidates.push({ provider, model: fallback.model, tier: fallback.tier });
+    }
+  }
   let lastError: unknown;
-  for (let attempt = 0; attempt < PROVIDER_SAFETY_POLICY.maxAttempts; attempt += 1) {
-    const admission = await reserveProviderAttempt();
-    if (!admission.allowed) throw admission.error;
-    const controller = new AbortController();
-    const deadline = setTimeout(() => controller.abort(new TransformProviderSafetyError("DEADLINE_EXCEEDED", true)), PROVIDER_SAFETY_POLICY.deadlineMs);
-    try {
-      const response = await invokeLLM({
-        model,
-        messages: buildTransformMessages(text, mode, intensity, { protectedTerms, documentContext, codeCommentOnly }),
-        maxCompletionTokens: 2_400,
-        signal: controller.signal,
-      });
-      const transformed = readTextContent(response.choices[0]?.message.content);
-      if (!transformed) throw new Error("The transformation service returned an empty result.");
-      await recordProviderOutcome(true);
-      return { text: transformed, model: response.model || model };
-    } catch (error) {
-      lastError = error;
-      const deadlineExceeded = controller.signal.aborted && controller.signal.reason instanceof TransformProviderSafetyError;
-      if (!(error instanceof TransformProviderSafetyError)) await recordProviderOutcome(false);
-      if (deadlineExceeded) {
-        throw controller.signal.reason;
+  for (let providerIndex = 0; providerIndex < candidates.length; providerIndex += 1) {
+    const selected = candidates[providerIndex];
+    if (!selected) continue;
+    const { provider, model, tier } = selected;
+    for (let attempt = 0; attempt <= provider.maxRetries && attempt < PROVIDER_SAFETY_POLICY.maxAttempts; attempt += 1) {
+      const admission = await reserveProviderAttempt(provider.name, estimatedOutputTokens);
+      if (!admission.allowed) throw admission.error;
+      const controller = new AbortController();
+      const deadline = setTimeout(() => controller.abort(new TransformProviderSafetyError("DEADLINE_EXCEEDED", true)), Math.min(provider.timeoutMs, PROVIDER_SAFETY_POLICY.deadlineMs));
+      try {
+        const response = await invokeLLM({
+          model,
+          messages: buildTransformMessages(text, mode, intensity, { protectedTerms, documentContext, codeCommentOnly }),
+          maxCompletionTokens: estimatedOutputTokens,
+          signal: controller.signal,
+        }, provider);
+        const transformed = readTextContent(response.choices[0]?.message.content);
+        if (!transformed) throw new Error("The transformation provider returned an empty result.");
+        await recordProviderOutcome(true, provider.name);
+        const resolvedModel = response.model || provider.defaultModel;
+        return {
+          text: transformed,
+          model: resolvedModel,
+          provenance: [{
+            provider: provider.name,
+            requestedModel: model,
+            resolvedModel,
+            routingTier: tier as LlmProvenance["routingTier"],
+            providerRoute: response.providerRoute,
+            generationId: response.id,
+            fallbackUsed: providerIndex > 0,
+          }],
+          usage: normalizeUsage(response),
+        };
+      } catch (error) {
+        lastError = error;
+        const deadlineExceeded = controller.signal.aborted && controller.signal.reason instanceof TransformProviderSafetyError;
+        if (!(error instanceof TransformProviderSafetyError)) await recordProviderOutcome(false, provider.name);
+        if (deadlineExceeded) throw controller.signal.reason;
+        if (error instanceof TransformProviderSafetyError) throw error;
+
+        const retryable = isRetryableProviderError(error);
+        if (retryable && attempt < provider.maxRetries && attempt < PROVIDER_SAFETY_POLICY.maxAttempts - 1) {
+          await wait(providerRetryDelay(attempt));
+          continue;
+        }
+
+        if (providerIndex < candidates.length - 1 && settings.routing.allowProviderFallback && (retryable || error instanceof LLMProviderError && [401, 402, 403].includes(error.status))) break;
+        throw error;
+      } finally {
+        clearTimeout(deadline);
       }
-      if (error instanceof TransformProviderSafetyError || attempt >= PROVIDER_SAFETY_POLICY.maxAttempts - 1 || !isRetryableProviderError(error)) throw error;
-      await wait(providerRetryDelay(attempt));
-    } finally {
-      clearTimeout(deadline);
+    }
+    if (providerIndex < candidates.length - 1) {
+      console.warn(`[LLM] configured route ${provider.name} failed; switching to configured fallback ${candidates[providerIndex + 1]?.provider.name ?? "unknown"}`);
+      continue;
     }
   }
   throw lastError instanceof Error ? lastError : new Error("The transformation service failed after retries.");
@@ -173,21 +244,31 @@ export async function transformText({
   protectedTerms?: string[];
   documentContext?: DocumentContext;
   codeCommentOnly?: boolean;
-}): Promise<{ text: string; model: string }> {
+}): Promise<PlainTransformResult & { complexity: TransformComplexity }> {
   const document = parseStructuredDocument(text, { transformCodeComments: codeCommentOnly });
-  if (!document.hasStructure || !document.units.length) return transformPlainText({ text, mode, intensity, protectedTerms, documentContext, codeCommentOnly });
+  const complexity = scoreComplexity({ document, mode, intensity, protectedTerms });
+  const complexitySummary: TransformComplexity = { score: complexity.score, bucket: complexity.bucket, reasonCodes: complexity.reasons, estimatedInputTokens: complexity.features.estimatedInputTokens };
+  if (!document.hasStructure || !document.units.length) {
+    const result = await transformPlainText({ text, mode, intensity, protectedTerms, documentContext, codeCommentOnly, complexity });
+    return { ...result, complexity: complexitySummary };
+  }
   const transformed: Record<string, string> = {};
   let model = "structure-preserving";
+  let usage: LlmUsage = {};
+  const provenance: LlmProvenance[] = [];
   for (const unit of document.units) {
     if (!unit.text.trim()) {
       transformed[unit.id] = unit.text;
       continue;
     }
-    const result = await transformPlainText({ text: unit.text, mode, intensity, protectedTerms, documentContext, codeCommentOnly: codeCommentOnly && unit.nodeType === "code-comment" });
+    const result = await transformPlainText({ text: unit.text, mode, intensity, protectedTerms, documentContext, codeCommentOnly: codeCommentOnly && unit.nodeType === "code-comment", complexity });
     transformed[unit.id] = normalizeEditableCandidate(unit.text, result.text);
     model = result.model;
+    usage = addUsage(usage, result.usage);
+    provenance.push(...result.provenance);
   }
-  return { text: reconstructStructuredDocument(document, transformed), model };
+  const uniqueProvenance = provenance.filter((item, index, all) => all.findIndex(candidate => candidate.provider === item.provider && candidate.requestedModel === item.requestedModel && candidate.resolvedModel === item.resolvedModel && candidate.routingTier === item.routingTier) === index);
+  return { text: reconstructStructuredDocument(document, transformed), model, provenance: uniqueProvenance, usage, complexity: complexitySummary };
 }
 
 export function splitIntoDisplayChunks(text: string, targetSize = 32): string[] {

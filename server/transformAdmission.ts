@@ -1,9 +1,3 @@
-import { and, count, eq, gt, lt, sql } from "drizzle-orm";
-import {
-  transformConcurrencyLeases,
-  transformControlLocks,
-  transformUsageWindows,
-} from "../drizzle/schema";
 import { getDb } from "./db";
 
 export const TRANSFORM_ADMISSION_POLICY = {
@@ -45,33 +39,40 @@ export async function admitTransformRequest(userOpenId: string, requestId: strin
   if (!db) return { allowed: false, code: "SERVICE_UNAVAILABLE", retryAfterMs: 5_000 };
 
   try {
-    return await db.transaction(async tx => {
+    return await db.$transaction(async tx => {
       const incrementUsageWindow = async (
         windowType: "minute" | "day",
         windowStart: Date,
         limit: number,
       ) => {
-        const existing = await tx.select().from(transformUsageWindows).where(and(
-          eq(transformUsageWindows.userOpenId, userOpenId),
-          eq(transformUsageWindows.windowType, windowType),
-          eq(transformUsageWindows.windowStart, windowStart),
-        )).limit(1);
-        const current = existing[0]?.requestCount ?? 0;
+        const existing = await tx.transformUsageWindow.findFirst({
+          where: { userOpenId, windowType, windowStart },
+        });
+        const current = existing?.requestCount ?? 0;
         if (current >= limit) return false;
-        if (existing[0]) {
-          await tx.update(transformUsageWindows).set({ requestCount: current + 1, updatedAt: new Date() }).where(eq(transformUsageWindows.id, existing[0].id));
+        if (existing) {
+          await tx.transformUsageWindow.update({
+            where: { id: existing.id },
+            data: { requestCount: current + 1, updatedAt: new Date() },
+          });
         } else {
-          await tx.insert(transformUsageWindows).values({ userOpenId, windowType, windowStart, requestCount: 1 });
+          await tx.transformUsageWindow.create({
+            data: { userOpenId, windowType, windowStart, requestCount: 1 },
+          });
         }
         return true;
       };
 
-      await tx.execute(sql`SELECT id FROM transform_control_locks WHERE id = 'global' FOR UPDATE`);
       const now = new Date();
-      await tx.delete(transformConcurrencyLeases).where(lt(transformConcurrencyLeases.expiresAt, now));
+      await tx.transformControlLock.upsert({
+        where: { id: "global" },
+        create: { id: "global", updatedAt: now },
+        update: { updatedAt: now },
+      });
+      await tx.transformConcurrencyLease.deleteMany({ where: { expiresAt: { lt: now } } });
 
-      const activeRows = await tx.select({ active: count() }).from(transformConcurrencyLeases).where(gt(transformConcurrencyLeases.expiresAt, now));
-      if (Number(activeRows[0]?.active ?? 0) >= TRANSFORM_ADMISSION_POLICY.globalConcurrentTransforms) {
+      const active = await tx.transformConcurrencyLease.count({ where: { expiresAt: { gt: now } } });
+      if (active >= TRANSFORM_ADMISSION_POLICY.globalConcurrentTransforms) {
         return { allowed: false, code: "CAPACITY_EXHAUSTED", retryAfterMs: 5_000 } as const;
       }
 
@@ -87,10 +88,12 @@ export async function admitTransformRequest(userOpenId: string, requestId: strin
         return { allowed: false, code: "RATE_LIMITED", retryAfterMs: Math.max(1_000, dayStart.getTime() + 86_400_000 - now.getTime()) } as const;
       }
 
-      await tx.insert(transformConcurrencyLeases).values({
-        requestId,
-        userOpenId,
-        expiresAt: new Date(now.getTime() + TRANSFORM_ADMISSION_POLICY.leaseDurationMs),
+      await tx.transformConcurrencyLease.create({
+        data: {
+          requestId,
+          userOpenId,
+          expiresAt: new Date(now.getTime() + TRANSFORM_ADMISSION_POLICY.leaseDurationMs),
+        },
       });
       return { allowed: true, lease: { requestId, userOpenId, queueWaitMs: Date.now() - startedAt } } as const;
     });
@@ -104,7 +107,7 @@ export async function releaseTransformLease(requestId: string) {
   const db = await getDb();
   if (!db) return;
   try {
-    await db.delete(transformConcurrencyLeases).where(eq(transformConcurrencyLeases.requestId, requestId));
+    await db.transformConcurrencyLease.deleteMany({ where: { requestId } });
   } catch (error) {
     console.error("[Transform admission] Lease release failed", error instanceof Error ? error.name : "unknown");
   }

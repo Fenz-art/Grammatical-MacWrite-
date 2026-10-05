@@ -127,6 +127,19 @@ describe("transformEventStream", () => {
     });
   });
 
+  it("reports missing provider credentials as a non-retryable configuration error", async () => {
+    const events = [];
+    for await (const event of transformEventStream(input, undefined, async () => {
+      throw new Error("PROVIDER_NOT_CONFIGURED");
+    })) events.push(event);
+    expect(events.at(-1)).toEqual({
+      type: "error",
+      requestId: input.requestId,
+      code: "PROVIDER_NOT_CONFIGURED",
+      retryable: false,
+    });
+  });
+
   it("propagates a provider deadline as a typed retryable outcome while preserving the request identity", async () => {
     const events = [];
     for await (const event of transformEventStream(input, undefined, async () => {

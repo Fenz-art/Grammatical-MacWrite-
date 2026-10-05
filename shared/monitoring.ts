@@ -1,4 +1,4 @@
-import type { TransformationIntensity, TransformationMode } from "./transformations";
+import type { ComplexityBucket, LlmProviderName, RoutingTier, TransformationIntensity, TransformationMode } from "./transformations";
 
 export type TransformMetricOutcome = "accepted" | "rejected" | "error" | "cancelled";
 
@@ -11,6 +11,18 @@ export type TransformMetricSample = {
   outcome: TransformMetricOutcome;
   providerFailure: boolean;
   failureCode?: string;
+  provider?: LlmProviderName;
+  requestedModel?: string;
+  resolvedModel?: string;
+  routingTier?: RoutingTier;
+  complexityBucket?: ComplexityBucket;
+  estimatedInputTokens?: number;
+  actualInputTokens?: number;
+  actualOutputTokens?: number;
+  reasoningTokens?: number;
+  cachedTokens?: number;
+  costUsd?: number;
+  fallbackUsed?: boolean;
 };
 
 export type TransformMetricsSnapshot = {

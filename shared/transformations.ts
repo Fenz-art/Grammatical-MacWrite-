@@ -23,6 +23,37 @@ export const TRANSFORMATION_MODE_LABELS: Record<
 
 export type ValidationStatus = "accepted" | "uncertain" | "rejected";
 
+export type LlmProviderName = "groq" | "deepseek" | "openrouter" | "ollama" | "custom";
+export type RoutingTier = "default" | "secondary" | "tertiary" | "quaternary";
+export type ComplexityBucket = "small" | "ordinary" | "large" | "difficult";
+
+export type LlmUsage = {
+  promptTokens?: number;
+  completionTokens?: number;
+  reasoningTokens?: number;
+  cachedTokens?: number;
+  cacheWriteTokens?: number;
+  totalTokens?: number;
+  costUsd?: number;
+};
+
+export type LlmProvenance = {
+  provider: LlmProviderName;
+  requestedModel: string;
+  resolvedModel?: string;
+  routingTier: RoutingTier;
+  providerRoute?: string;
+  generationId?: string;
+  fallbackUsed?: boolean;
+};
+
+export type TransformComplexity = {
+  score: number;
+  bucket: ComplexityBucket;
+  reasonCodes: string[];
+  estimatedInputTokens: number;
+};
+
 export type SemanticCheck = {
   dimension:
     | "numbers"
@@ -50,6 +81,9 @@ export type TransformResult = {
   validationStatus: ValidationStatus;
   checks: SemanticCheck[];
   elapsedMs: number;
+  provenance?: LlmProvenance[];
+  usage?: LlmUsage;
+  complexity?: TransformComplexity;
 };
 
 export type TransformationErrorCode =
@@ -59,6 +93,7 @@ export type TransformationErrorCode =
   | "CAPACITY_EXHAUSTED"
   | "BUDGET_EXHAUSTED"
   | "PROVIDER_CIRCUIT_OPEN"
+  | "PROVIDER_NOT_CONFIGURED"
   | "DEADLINE_EXCEEDED"
   | "NETWORK_LOST"
   | "CANCELLED"

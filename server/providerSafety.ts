@@ -1,9 +1,7 @@
-import { eq, sql } from "drizzle-orm";
-import { providerCircuitStates, providerSpendWindows, transformControlLocks } from "../drizzle/schema";
 import type { TransformationErrorCode } from "../shared/transformations";
 import { getDb } from "./db";
 
-const PROVIDER_KEY = "builtin-llm-transform";
+const DEFAULT_PROVIDER_KEY = "builtin-llm-transform";
 export const PROVIDER_SAFETY_POLICY = {
   maxAttempts: 3,
   deadlineMs: 45_000,
@@ -39,38 +37,47 @@ export function providerRetryDelay(attempt: number, random = Math.random) {
 type ProviderAdmission = { allowed: true } | { allowed: false; error: TransformProviderSafetyError };
 
 /** Reserve the maximum response-token allowance before each upstream call. */
-export async function reserveProviderAttempt(): Promise<ProviderAdmission> {
+export async function reserveProviderAttempt(providerName = DEFAULT_PROVIDER_KEY, estimatedCompletionTokens: number = PROVIDER_SAFETY_POLICY.estimatedCompletionTokens): Promise<ProviderAdmission> {
   const db = await getDb();
   if (!db) return { allowed: false, error: new TransformProviderSafetyError("PROVIDER_CIRCUIT_OPEN", true, 5_000) };
   try {
-    return await db.transaction(async tx => {
-      await tx.execute(sql`SELECT id FROM transform_control_locks WHERE id = 'global' FOR UPDATE`);
+    return await db.$transaction(async tx => {
       const now = new Date();
-      const circuit = await tx.select().from(providerCircuitStates).where(eq(providerCircuitStates.providerKey, PROVIDER_KEY)).limit(1);
-      const openUntil = circuit[0]?.openUntil;
+      await tx.transformControlLock.upsert({
+        where: { id: "global" },
+        create: { id: "global", updatedAt: now },
+        update: { updatedAt: now },
+      });
+      const circuit = await tx.providerCircuitState.findUnique({ where: { providerKey: providerName } });
+      const openUntil = circuit?.openUntil ?? null;
       if (openUntil && openUntil.getTime() > now.getTime()) {
         return { allowed: false, error: new TransformProviderSafetyError("PROVIDER_CIRCUIT_OPEN", true, openUntil.getTime() - now.getTime()) } as const;
       }
 
       const today = dayStart(now);
-      const window = await tx.select().from(providerSpendWindows).where(eq(providerSpendWindows.dayStart, today)).limit(1);
-      const reserved = window[0]?.reservedTokens ?? 0;
-      if (reserved + PROVIDER_SAFETY_POLICY.estimatedCompletionTokens > PROVIDER_SAFETY_POLICY.dailyReservedTokenBudget) {
+      const window = await tx.providerSpendWindow.findUnique({ where: { dayStart: today } });
+      const reserved = window?.reservedTokens ?? 0;
+      if (reserved + estimatedCompletionTokens > PROVIDER_SAFETY_POLICY.dailyReservedTokenBudget) {
         const nextDay = today.getTime() + 86_400_000;
         return { allowed: false, error: new TransformProviderSafetyError("BUDGET_EXHAUSTED", false, nextDay - now.getTime()) } as const;
       }
 
-      if (window[0]) {
-        await tx.update(providerSpendWindows).set({
-          reservedTokens: reserved + PROVIDER_SAFETY_POLICY.estimatedCompletionTokens,
-          requestCount: window[0].requestCount + 1,
-          updatedAt: now,
-        }).where(eq(providerSpendWindows.dayStart, today));
+      if (window) {
+        await tx.providerSpendWindow.update({
+          where: { dayStart: today },
+          data: {
+            reservedTokens: reserved + estimatedCompletionTokens,
+            requestCount: window.requestCount + 1,
+            updatedAt: now,
+          },
+        });
       } else {
-        await tx.insert(providerSpendWindows).values({
-          dayStart: today,
-          reservedTokens: PROVIDER_SAFETY_POLICY.estimatedCompletionTokens,
-          requestCount: 1,
+        await tx.providerSpendWindow.create({
+          data: {
+            dayStart: today,
+            reservedTokens: estimatedCompletionTokens,
+            requestCount: 1,
+          },
         });
       }
       return { allowed: true } as const;
@@ -82,30 +89,40 @@ export async function reserveProviderAttempt(): Promise<ProviderAdmission> {
 }
 
 /** Update health state with outcome metadata only; neither prompt nor user text is stored. */
-export async function recordProviderOutcome(success: boolean) {
+export async function recordProviderOutcome(success: boolean, providerName = DEFAULT_PROVIDER_KEY) {
   const db = await getDb();
   if (!db) return;
   try {
-    await db.transaction(async tx => {
-      await tx.execute(sql`SELECT id FROM transform_control_locks WHERE id = 'global' FOR UPDATE`);
-      const existing = await tx.select().from(providerCircuitStates).where(eq(providerCircuitStates.providerKey, PROVIDER_KEY)).limit(1);
+    await db.$transaction(async tx => {
+      const existing = await tx.providerCircuitState.findUnique({ where: { providerKey: providerName } });
       const now = new Date();
+      await tx.transformControlLock.upsert({
+        where: { id: "global" },
+        create: { id: "global", updatedAt: now },
+        update: { updatedAt: now },
+      });
       if (success) {
-        if (existing[0]) {
-          await tx.update(providerCircuitStates).set({ consecutiveFailures: 0, openUntil: null, updatedAt: now }).where(eq(providerCircuitStates.providerKey, PROVIDER_KEY));
+        if (existing) {
+          await tx.providerCircuitState.update({
+            where: { providerKey: providerName },
+            data: { consecutiveFailures: 0, openUntil: null, updatedAt: now },
+          });
         } else {
-          await tx.insert(providerCircuitStates).values({ providerKey: PROVIDER_KEY, consecutiveFailures: 0 });
+          await tx.providerCircuitState.create({ data: { providerKey: providerName, consecutiveFailures: 0, updatedAt: now } });
         }
         return;
       }
-      const failures = (existing[0]?.consecutiveFailures ?? 0) + 1;
+      const failures = (existing?.consecutiveFailures ?? 0) + 1;
       const openUntil = failures >= PROVIDER_SAFETY_POLICY.failureThreshold
         ? new Date(now.getTime() + PROVIDER_SAFETY_POLICY.circuitCooldownMs)
         : null;
-      if (existing[0]) {
-        await tx.update(providerCircuitStates).set({ consecutiveFailures: failures, openUntil, updatedAt: now }).where(eq(providerCircuitStates.providerKey, PROVIDER_KEY));
+      if (existing) {
+        await tx.providerCircuitState.update({
+          where: { providerKey: providerName },
+          data: { consecutiveFailures: failures, openUntil, updatedAt: now },
+        });
       } else {
-        await tx.insert(providerCircuitStates).values({ providerKey: PROVIDER_KEY, consecutiveFailures: failures, openUntil });
+        await tx.providerCircuitState.create({ data: { providerKey: providerName, consecutiveFailures: failures, openUntil, updatedAt: now } });
       }
     });
   } catch (error) {

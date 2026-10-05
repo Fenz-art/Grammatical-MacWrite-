@@ -10,7 +10,6 @@ import {
 } from "@/components/ui/menubar";
 import { parseTerminalInput } from "@shared/commands";
 import { trpc } from "@/lib/trpc";
-import { startLogin } from "@/const";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { SemanticAnalysisPanel } from "@/components/SemanticAnalysisPanel";
 import { TransformSettingsPanel } from "@/components/TransformSettingsPanel";
@@ -21,7 +20,7 @@ import { MarkdownPreviewPanel } from "@/components/MarkdownPreviewPanel";
 import { pasteWrapperLabel, splitPasteBlocks, downloadTextFile, buildDownloadAllText, outputFilename, type PasteBlock } from "@shared/pasteBlocks";
 import { plainTextFromRichHtml, richHtmlFromPlainText } from "@shared/richText";
 import { downloadChangeReport, downloadRichFormats, downloadSemanticAnalysis, richHtmlToMarkdownText, type ChangeReportExportFormat, type SemanticAnalysisExportFormat } from "@/lib/exportFormats";
-import { parseTransformStreamPayload, transformStreamUrl } from "../../../shared/transformStreamTransport";
+import { parseTransformStreamFrame, splitTransformStreamFrames, transformStreamUrl } from "../../../shared/transformStreamTransport";
 import {
   TRANSFORMATION_MODE_LABELS,
   type TransformationIntensity,
@@ -55,6 +54,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { AuthDialog } from "@/components/AuthDialog";
 
 type OutputEntry = {
   id: string;
@@ -122,6 +122,8 @@ export default function Home() {
   const [terminal, setTerminal] = useState({ open: true, minimized: false, maximized: false, x: 96, y: 70 });
   const [reduceMotion, setReduceMotion] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [authDialogOpen, setAuthDialogOpen] = useState(false);
+  const [authReason, setAuthReason] = useState<"transform" | "history">("transform");
   const [intensityOpen, setIntensityOpen] = useState(false);
   const [dashboardOpen, setDashboardOpen] = useState(false);
   const [reviewSettingsOpen, setReviewSettingsOpen] = useState(false);
@@ -399,8 +401,10 @@ export default function Home() {
 
     if (!auth.isAuthenticated) {
       setDraft(parsed.text);
-      append({ id: crypto.randomUUID(), kind: "error", text: "Sign in is required before Grammatical can transform text. Your input remains in the prompt." });
-      setLiveMessage("Sign in is required to start a protected transformation.");
+      setAuthReason("transform");
+      setAuthDialogOpen(true);
+      append({ id: crypto.randomUUID(), kind: "system", text: "Authentication required for transformation. Source text remains preserved in the prompt." });
+      setLiveMessage("Sign in to continue. Your source text is preserved in the prompt.");
       return;
     }
 
@@ -479,6 +483,8 @@ export default function Home() {
               ? "Grammatical is protecting active work from a traffic burst. Try again shortly."
               : event.code === "BUDGET_EXHAUSTED" || event.code === "PROVIDER_CIRCUIT_OPEN"
                 ? "The provider safety guard is temporarily active. Your input is preserved; try again later."
+                : event.code === "PROVIDER_NOT_CONFIGURED"
+                  ? "LLM provider configuration is incomplete. Configure LLM_API_KEY and LLM_MODEL, plus a key and model for any enabled fallback; your input is preserved."
                 : event.code === "DEADLINE_EXCEEDED"
                   ? "The provider did not complete within the safety deadline. Your input is preserved."
                   : "This block could not be transformed after automatic retries. Your input is preserved.";
@@ -494,28 +500,65 @@ export default function Home() {
   useEffect(() => {
     if (!activeRequest) return;
     const request = activeRequest;
-    const source = new EventSource(transformStreamUrl(request));
-    source.onmessage = message => {
-      try {
-        const event = parseTransformStreamPayload(message.data);
-        handleStream(event);
-      } catch (error) {
-        console.error("[Grammatical transform stream parse]", error);
-        handleStream({ type: "error", requestId: request.requestId, code: "NETWORK_LOST", retryable: true });
-      }
-    };
-    source.addEventListener("serialized-error", event => {
-      const detail = event as MessageEvent<string>;
-      handleStream({ type: "error", requestId: request.requestId, code: /UNAUTHORIZED|AUTH_REQUIRED/i.test(detail.data ?? "") ? "AUTH_REQUIRED" : "SERVICE_UNAVAILABLE", retryable: !/UNAUTHORIZED|AUTH_REQUIRED/i.test(detail.data ?? "") });
-    });
-    source.addEventListener("return", () => source.close());
-    source.onerror = () => {
-      if (activeRequestRef.current?.requestId === request.requestId) {
-        handleStream({ type: "error", requestId: request.requestId, code: "NETWORK_LOST", retryable: true });
-      }
+    const controller = new AbortController();
+    let finished = false;
+
+    const emitError = (code: "AUTH_REQUIRED" | "NETWORK_LOST" | "SERVICE_UNAVAILABLE") => {
+      if (finished || activeRequestRef.current?.requestId !== request.requestId) return;
+      finished = true;
+      handleStream({ type: "error", requestId: request.requestId, code, retryable: code !== "AUTH_REQUIRED" });
     };
 
-    return () => source.close();
+    const consume = async () => {
+      try {
+        const response = await fetch(transformStreamUrl(request), {
+          credentials: "include",
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          emitError(response.status === 401 || response.status === 403 ? "AUTH_REQUIRED" : response.status === 429 ? "SERVICE_UNAVAILABLE" : "SERVICE_UNAVAILABLE");
+          return;
+        }
+        if (!response.body) {
+          emitError("NETWORK_LOST");
+          return;
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (!finished) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          buffer += decoder.decode(chunk.value, { stream: true });
+          const split = splitTransformStreamFrames(buffer);
+          const frames = split.frames;
+          buffer = split.remainder;
+          for (const frame of frames) {
+            try {
+              const event = parseTransformStreamFrame(frame);
+              if (!event) continue;
+              handleStream(event);
+              if (event.type === "complete" || event.type === "rejected" || event.type === "error") finished = true;
+            } catch (error) {
+              console.error("[Grammatical transform stream parse]", error);
+              emitError("NETWORK_LOST");
+              break;
+            }
+          }
+        }
+        if (!finished && !controller.signal.aborted && activeRequestRef.current?.requestId === request.requestId) emitError("NETWORK_LOST");
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          console.error("[Grammatical transform stream request]", error);
+          emitError("NETWORK_LOST");
+        }
+      }
+    };
+    void consume();
+    return () => {
+      finished = true;
+      controller.abort();
+    };
   }, [activeRequest]);
 
   const cancel = () => {
@@ -585,10 +628,45 @@ export default function Home() {
           <MenubarMenu><MenubarTrigger>View</MenubarTrigger><MenubarContent><MenubarItem onSelect={() => setReviewSettingsOpen(true)}><BookOpenCheck size={14} /> Document review setup</MenubarItem><MenubarItem onSelect={() => setIntensityOpen(true)}><Settings2 size={14} /> Transformation intensity</MenubarItem><MenubarItem onSelect={() => { setDashboardOpen(true); void metricsQuery.refetch(); }}><BarChart3 size={14} /> Benchmark dashboard</MenubarItem><MenubarSeparator /><MenubarItem onSelect={() => setReduceMotion(value => !value)}><Moon size={14} /> {reduceMotion ? "Enable motion" : "Reduce motion"}</MenubarItem></MenubarContent></MenubarMenu>
           <MenubarMenu><MenubarTrigger>Help</MenubarTrigger><MenubarContent><MenubarItem onSelect={() => append({ id: crypto.randomUUID(), kind: "help", text: "Commands: clear · mode <name> · copy-output · help" })}><HelpCircle size={14} /> Command guide</MenubarItem></MenubarContent></MenubarMenu>
         </Menubar>
-        <div className="system-status"><span className="privacy-status"><ShieldCheck size={14} /> Semantic guard on</span>{auth.isAuthenticated ? <span className="privacy-status">Protected session</span> : <button className="auth-status-button" onClick={() => startLogin()}>Sign in to transform</button>}<span><Wifi size={14} /></span><span className="clock"><Command size={13} /> {clockText(clock)}</span></div>
+        <div className="system-status"><span className="privacy-status"><ShieldCheck size={14} /> Semantic guard on</span>{auth.isAuthenticated ? <span className="privacy-status">Protected session</span> : <AuthDialog open={authDialogOpen} onOpenChange={setAuthDialogOpen} reason={authReason} context={authReason === "transform" ? { mode: TRANSFORMATION_MODE_LABELS[activeMode], title: documentTitle, characters: draft.length } : undefined} trigger={<button className="auth-status-button" onClick={() => setAuthReason("transform")}>Sign in to transform</button>} />}<span><Wifi size={14} /></span><span className="clock"><Command size={13} /> {clockText(clock)}</span></div>
       </header>
 
-      {historyOpen && <aside className="history-panel" aria-label="Transformation history"><div className="history-panel-header"><div><strong>Transformation history</strong><span>{auth.isAuthenticated ? "Persistent records for this account" : "Sign in to enable persistent history"}</span></div><button onClick={() => setHistoryOpen(false)} aria-label="Close history"><X size={15} /></button></div>{auth.isAuthenticated ? <><input className="history-search" value={historySearch} onChange={event => setHistorySearch(event.target.value)} placeholder="Search title, input, or output" aria-label="Search transformation history" />{historyQuery.isLoading ? <p className="history-empty">Loading history…</p> : historySessions.length ? <div className="history-list">{historySessions.map(session => <section className="history-session" key={session.id}><div className="history-session-heading"><span>Session {session.id.slice(0, 8)}</span><small>{session.records.length} transformation{session.records.length === 1 ? "" : "s"}</small></div>{session.records.map(record => <article className="history-record" key={record.id}><button className="history-record-main" onClick={() => restoreHistory(record)}><span>{record.title}</span><small>{MODE_META[record.mode].label} · {new Date(record.createdAt).toLocaleString()}</small></button><button className="history-delete" onClick={() => { if (window.confirm("Delete this history record?")) historyDelete.mutate({ id: record.id }); }} aria-label={`Delete ${record.title}`}><X size={14} /></button></article>)}</section>)}</div> : <p className="history-empty">No saved transformations match this search.</p>}</> : <><p className="history-empty">Persistent history is account-scoped. Sign in through Manus OAuth to save and search transformations.</p><button className="history-login" onClick={() => startLogin()}>Sign in</button></>}</aside>}
+      {historyOpen && (
+        <aside className="history-panel" aria-label="Transformation history">
+          <div className="history-panel-header">
+            <div>
+              <strong>Transformation history</strong>
+              <span>{auth.isAuthenticated ? "Persistent records for this account" : "Sign in to enable persistent history"}</span>
+            </div>
+            <button onClick={() => setHistoryOpen(false)} aria-label="Close history"><X size={15} /></button>
+          </div>
+          {auth.isAuthenticated ? (
+            <>
+              <input className="history-search" value={historySearch} onChange={event => setHistorySearch(event.target.value)} placeholder="Search title, input, or output" aria-label="Search transformation history" />
+              {historyQuery.isLoading ? <p className="history-empty">Loading history…</p> : historySessions.length ? (
+                <div className="history-list">
+                  {historySessions.map(session => (
+                    <section className="history-session" key={session.id}>
+                      <div className="history-session-heading"><span>Session {session.id.slice(0, 8)}</span><small>{session.records.length} transformation{session.records.length === 1 ? "" : "s"}</small></div>
+                      {session.records.map(record => (
+                        <article className="history-record" key={record.id}>
+                          <button className="history-record-main" onClick={() => restoreHistory(record)}><span>{record.title}</span><small>{MODE_META[record.mode].label} · {new Date(record.createdAt).toLocaleString()}</small></button>
+                          <button className="history-delete" onClick={() => { if (window.confirm("Delete this history record?")) historyDelete.mutate({ id: record.id }); }} aria-label={`Delete ${record.title}`}><X size={14} /></button>
+                        </article>
+                      ))}
+                    </section>
+                  ))}
+                </div>
+              ) : <p className="history-empty">No saved transformations match this search.</p>}
+            </>
+          ) : (
+            <>
+              <p className="history-empty">Persistent history is account-scoped. Sign in to save and search transformations.</p>
+              <button className="history-login" onClick={() => { setAuthReason("history"); setAuthDialogOpen(true); }}>Sign in</button>
+            </>
+          )}
+        </aside>
+      )}
       {reviewSettingsOpen && <DocumentReviewSettingsPanel title={documentTitle} profileId={writingProfile} protectedTerms={protectedTerms} sourceText={draft || activeDocumentRef.current?.sourceText || ""} codeCommentOnly={codeCommentOnly} onTitleChange={setDocumentTitle} onProfileChange={setWritingProfile} onProtectedTermsChange={setProtectedTerms} onCodeCommentOnlyChange={setCodeCommentOnly} onClose={() => setReviewSettingsOpen(false)} />}
       {intensityOpen && <aside className="overlay-panel intensity-overlay" aria-label="Transformation intensity settings"><div className="history-panel-header"><div><strong>Transformation intensity</strong><span>Saved locally for each mode</span></div><button onClick={() => setIntensityOpen(false)} aria-label="Close transformation intensity settings"><X size={15} /></button></div>{(["proofread", "improve", "natural", "rewrite"] as TransformationMode[]).map(mode => <TransformSettingsPanel key={mode} mode={mode} intensity={modeIntensities[mode]} onChange={intensity => setModeIntensities(current => ({ ...current, [mode]: intensity }))} />)}</aside>}
       {dashboardOpen && <BenchmarkDashboard metrics={metricsQuery.data} isLoading={metricsQuery.isLoading || metricsQuery.isFetching} onRefresh={() => void metricsQuery.refetch()} onClose={() => setDashboardOpen(false)} />}

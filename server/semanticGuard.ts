@@ -36,7 +36,10 @@ const patterns = {
   dates:
     /\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2}(?:,\s*\d{4})?)\b/gi,
   urls: /(?:https?:\/\/|www\.)[^\s)\]}>,]+/gi,
-  code: /`[^`]+`|\b[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+\b/g,
+  // Fenced code is validated as an immutable structured region. Match only
+  // single backtick spans here so a fence cannot pair with a later inline
+  // span and accidentally make intervening prose part of a protected token.
+  code: /(?<!`)`(?!`)[^`\n]+(?<!`)`(?!`)|\b[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+\b/g,
   negation: /\b(?:not|never|none|cannot|can't|won't|isn't|aren't|doesn't|don't|without)\b/gi,
   modality: /\b(?:may|might|could|should|must|will|would|can|shall)\b/gi,
   quantifiers: /\b(?:all|some|none|most|only|each|every|any|many|few|several|exactly|at\s+least)\b/gi,

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { notifyOwner } from "./notification";
 import { adminProcedure, publicProcedure, router } from "./trpc";
+import { resolveConfiguredLLMSettings } from "./llmProviders";
 
 export const systemRouter = router({
   health: publicProcedure
@@ -12,6 +13,14 @@ export const systemRouter = router({
     .query(() => ({
       ok: true,
     })),
+
+  providerStatus: publicProcedure.query(() => {
+    const settings = resolveConfiguredLLMSettings();
+    return {
+      configured: settings.providers.some(provider => provider.enabled),
+      fallbackConfigured: settings.providers.filter(provider => provider.enabled).length > 1,
+    };
+  }),
 
   notifyOwner: adminProcedure
     .input(

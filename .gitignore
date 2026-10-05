@@ -50,6 +50,9 @@ pids
 coverage/
 *.lcov
 
+# Sanitized live-provider validation reports
+artifacts/live-provider-tests/
+
 # nyc test coverage
 .nyc_output
 

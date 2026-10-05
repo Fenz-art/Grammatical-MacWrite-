@@ -38,7 +38,7 @@ export type HistoryRouter = typeof historyRouter;
 
 export default historyRouter;
 
-// History records deliberately use the authenticated Manus openId as the ownership boundary.
+// History records use the authenticated account identifier as the ownership boundary.
 // The client never supplies or can override userOpenId.
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars

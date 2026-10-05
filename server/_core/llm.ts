@@ -1,4 +1,4 @@
-import { ENV } from "./env";
+import type { ProviderConfig } from "./llmProviders";
 
 export type Role = "system" | "user" | "assistant" | "tool" | "function";
 
@@ -85,9 +85,11 @@ export type ToolCall = {
 };
 
 export type InvokeResult = {
-  id: string;
-  created: number;
-  model: string;
+  id?: string;
+  created?: number;
+  model?: string;
+  provider?: string;
+  providerRoute?: string;
   choices: Array<{
     index: number;
     message: {
@@ -98,11 +100,22 @@ export type InvokeResult = {
     finish_reason: string | null;
   }>;
   usage?: {
-    prompt_tokens: number;
-    completion_tokens: number;
-    total_tokens: number;
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+    reasoning_tokens?: number;
+    cost?: number;
+    prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
+    completion_tokens_details?: { reasoning_tokens?: number };
   };
 };
+
+export class LLMProviderError extends Error {
+  constructor(public readonly status: number, provider: string) {
+    super(`LLM_PROVIDER_STATUS:${provider}:${status}`);
+    this.name = "LLMProviderError";
+  }
+}
 
 export type JsonSchema = {
   name: string;
@@ -216,17 +229,6 @@ const normalizeToolChoice = (
   return toolChoice;
 };
 
-const resolveApiUrl = () =>
-  ENV.forgeApiUrl && ENV.forgeApiUrl.trim().length > 0
-    ? `${ENV.forgeApiUrl.replace(/\/$/, "")}/v1/chat/completions`
-    : "https://forge.manus.im/v1/chat/completions";
-
-const assertApiKey = () => {
-  if (!ENV.forgeApiKey) {
-    throw new Error("OPENAI_API_KEY is not configured");
-  }
-};
-
 const normalizeResponseFormat = ({
   responseFormat,
   response_format,
@@ -320,7 +322,8 @@ const fetchWithBackoff = async (
     if (init.signal?.aborted) throw init.signal.reason ?? new Error("LLM request aborted");
     try {
       const response = await fetch(url, init);
-      if (response.ok || attempt === RETRY_MAX_RETRIES) {
+      const retryableStatus = [408, 409, 425, 429, 500, 502, 503, 504].includes(response.status);
+      if (response.ok || !retryableStatus || attempt === RETRY_MAX_RETRIES) {
         return response;
       }
 
@@ -351,9 +354,7 @@ const fetchWithBackoff = async (
     : new Error("LLM request failed after exhausting retries");
 };
 
-export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
-  assertApiKey();
-
+export async function invokeLLM(params: InvokeParams, provider: ProviderConfig): Promise<InvokeResult> {
   const {
     messages,
     tools,
@@ -401,7 +402,11 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   const resolvedMaxCompletionTokens =
     max_completion_tokens ?? maxCompletionTokens;
   if (typeof resolvedMaxCompletionTokens === "number") {
-    payload.max_completion_tokens = resolvedMaxCompletionTokens;
+    if (provider.name === "deepseek" && resolvedMaxTokens === undefined) {
+      payload.max_tokens = resolvedMaxCompletionTokens;
+    } else {
+      payload.max_completion_tokens = resolvedMaxCompletionTokens;
+    }
   }
 
   if (thinking) {
@@ -422,55 +427,30 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     payload.response_format = normalizedResponseFormat;
   }
 
-  const response = await fetchWithBackoff(resolveApiUrl(), {
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    authorization: `Bearer ${provider.apiKey ?? ""}`,
+  };
+  if (provider.name === "openrouter") {
+    if (provider.httpReferer) headers["HTTP-Referer"] = provider.httpReferer;
+    if (provider.xTitle) headers["X-Title"] = provider.xTitle;
+  }
+  const response = await fetchWithBackoff(`${provider.baseUrl}/chat/completions`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${ENV.forgeApiKey}`,
-    },
+    headers,
     body: JSON.stringify(payload),
     signal,
   });
 
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(
-      `LLM invoke failed: ${response.status} ${response.statusText} – ${errorText}`
-    );
+    await response.body?.cancel();
+    throw new LLMProviderError(response.status, provider.name);
   }
 
-  return (await response.json()) as InvokeResult;
-}
-
-export type ModelInfo = {
-  id: string;
-  object: string;
-  created: number;
-  owned_by: string;
-};
-
-export type ModelsResponse = {
-  object: string;
-  data: ModelInfo[];
-};
-
-export async function listLLMModels(): Promise<ModelsResponse> {
-  assertApiKey();
-
-  const url = ENV.forgeApiUrl && ENV.forgeApiUrl.trim().length > 0
-    ? `${ENV.forgeApiUrl.replace(/\/$/, "")}/v1/models`
-    : "https://forge.manus.im/v1/models";
-
-  const response = await fetchWithBackoff(url, {
-    headers: { authorization: `Bearer ${ENV.forgeApiKey}` },
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(
-      `List LLM models failed: ${response.status} ${response.statusText} – ${errorText}`
-    );
-  }
-
-  return (await response.json()) as ModelsResponse;
+  const result = await response.json() as InvokeResult;
+  const routeHeader = response.headers.get("x-provider") ?? response.headers.get("x-openrouter-provider");
+  return {
+    ...result,
+    providerRoute: result.providerRoute ?? result.provider ?? routeHeader ?? undefined,
+  };
 }

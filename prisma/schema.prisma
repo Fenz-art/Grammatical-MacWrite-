@@ -1,0 +1,142 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  user
+  admin
+}
+
+enum TransformationMode {
+  proofread
+  improve
+  natural
+  rewrite
+}
+
+enum WindowType {
+  minute
+  day
+}
+
+enum Outcome {
+  accepted
+  rejected
+  error
+  cancelled
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  openId       String   @unique @db.VarChar(64)
+  name         String?
+  email        String?  @unique @db.VarChar(320)
+  passwordHash String?  @db.VarChar(255)
+  loginMethod  String?  @db.VarChar(64)
+  role         UserRole @default(user)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  lastSignedIn DateTime @default(now())
+
+  @@map("users")
+}
+
+model TransformationHistory {
+  id         String   @id @db.VarChar(36)
+  userOpenId String   @db.VarChar(64)
+  sessionId  String   @db.VarChar(36)
+  mode       TransformationMode
+  title      String   @db.VarChar(180)
+  inputText  String
+  outputHtml String
+  outputText String
+  blockCount Int      @default(1)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([userOpenId, createdAt], map: "transformation_history_user_created_idx")
+  @@index([userOpenId, title], map: "transformation_history_user_search_idx")
+  @@map("transformation_history")
+}
+
+model TransformUsageWindow {
+  id          Int       @id @default(autoincrement())
+  userOpenId  String    @db.VarChar(64)
+  windowType  WindowType
+  windowStart DateTime
+  requestCount Int      @default(0)
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([userOpenId, windowType, windowStart], map: "transform_usage_user_window_unique")
+  @@index([windowType, windowStart], map: "transform_usage_window_expiry_idx")
+  @@map("transform_usage_windows")
+}
+
+model TransformControlLock {
+  id        String   @id @db.VarChar(32)
+  updatedAt DateTime @updatedAt
+
+  @@map("transform_control_locks")
+}
+
+model TransformConcurrencyLease {
+  requestId  String   @id @db.VarChar(120)
+  userOpenId String   @db.VarChar(64)
+  acquiredAt DateTime @default(now())
+  expiresAt  DateTime
+
+  @@index([expiresAt], map: "transform_concurrency_active_idx")
+  @@index([userOpenId, expiresAt], map: "transform_concurrency_user_idx")
+  @@map("transform_concurrency_leases")
+}
+
+model ProviderSpendWindow {
+  dayStart      DateTime @id
+  reservedTokens Int      @default(0)
+  requestCount  Int      @default(0)
+  updatedAt     DateTime @updatedAt
+
+  @@map("provider_spend_windows")
+}
+
+model ProviderCircuitState {
+  providerKey        String    @id @db.VarChar(96)
+  consecutiveFailures Int       @default(0)
+  openUntil          DateTime?
+  updatedAt          DateTime  @updatedAt
+
+  @@map("provider_circuit_states")
+}
+
+model TransformMetricEvent {
+  id             Int       @id @default(autoincrement())
+  at             DateTime
+  elapsedMs      Int
+  queueWaitMs    Int       @default(0)
+  mode           TransformationMode
+  intensity      String    @db.VarChar(32)
+  outcome        Outcome
+  providerFailure Boolean   @default(false)
+  failureCode    String?   @db.VarChar(64)
+  provider       String?   @db.VarChar(32)
+  requestedModel String?   @db.VarChar(160)
+  resolvedModel  String?   @db.VarChar(160)
+  routingTier    String?   @db.VarChar(16)
+  complexityBucket String? @db.VarChar(16)
+  estimatedInputTokens Int?
+  actualInputTokens Int?
+  actualOutputTokens Int?
+  reasoningTokens Int?
+  cachedTokens   Int?
+  costUsd        Float?
+  fallbackUsed   Boolean   @default(false)
+
+  @@index([at], map: "transform_metric_event_time_idx")
+  @@index([outcome, at], map: "transform_metric_outcome_time_idx")
+  @@map("transform_metric_events")
+}

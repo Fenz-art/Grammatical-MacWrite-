@@ -1,5 +1,3 @@
-import { desc, gte } from "drizzle-orm";
-import { transformMetricEvents } from "../drizzle/schema";
 import type { TransformMetricSample, TransformMetricsSnapshot } from "../shared/monitoring";
 import type { TransformationMode } from "../shared/transformations";
 import { getDb } from "./db";
@@ -19,15 +17,29 @@ async function persistTransformMetric(sample: TransformMetricSample) {
   const db = await getDb();
   if (!db) return;
   try {
-    await db.insert(transformMetricEvents).values({
-      at: new Date(sample.at),
-      elapsedMs: Math.max(0, Math.round(sample.elapsedMs)),
-      queueWaitMs: Math.max(0, Math.round(sample.queueWaitMs ?? 0)),
-      mode: sample.mode,
-      intensity: sample.intensity,
-      outcome: sample.outcome,
-      providerFailure: sample.providerFailure,
-      failureCode: sample.failureCode ?? null,
+    await db.transformMetricEvent.create({
+      data: {
+        at: new Date(sample.at),
+        elapsedMs: Math.max(0, Math.round(sample.elapsedMs)),
+        queueWaitMs: Math.max(0, Math.round(sample.queueWaitMs ?? 0)),
+        mode: sample.mode,
+        intensity: sample.intensity,
+        outcome: sample.outcome,
+        providerFailure: sample.providerFailure,
+        failureCode: sample.failureCode ?? null,
+        provider: sample.provider ?? null,
+        requestedModel: sample.requestedModel ?? null,
+        resolvedModel: sample.resolvedModel ?? null,
+        routingTier: sample.routingTier ?? null,
+        complexityBucket: sample.complexityBucket ?? null,
+        estimatedInputTokens: sample.estimatedInputTokens ?? null,
+        actualInputTokens: sample.actualInputTokens ?? null,
+        actualOutputTokens: sample.actualOutputTokens ?? null,
+        reasoningTokens: sample.reasoningTokens ?? null,
+        cachedTokens: sample.cachedTokens ?? null,
+        costUsd: sample.costUsd ?? null,
+        fallbackUsed: sample.fallbackUsed ?? false,
+      },
     });
   } catch (error) {
     // Telemetry must never interrupt a user transformation; logs omit user text and prompts.
@@ -75,16 +87,32 @@ export async function getFleetTransformMetrics(): Promise<TransformMetricsSnapsh
   if (!db) return getTransformMetrics();
   const since = new Date(Date.now() - 24 * 60 * 60 * 1_000);
   try {
-    const rows = await db.select().from(transformMetricEvents).where(gte(transformMetricEvents.at, since)).orderBy(desc(transformMetricEvents.at)).limit(500);
+    const rows = await db.transformMetricEvent.findMany({
+      where: { at: { gte: since } },
+      orderBy: { at: "desc" },
+      take: 500,
+    });
     const durableSamples: TransformMetricSample[] = rows.reverse().map(row => ({
       at: row.at.getTime(),
       elapsedMs: row.elapsedMs,
       queueWaitMs: row.queueWaitMs,
-      mode: row.mode,
-      intensity: row.intensity,
-      outcome: row.outcome,
+      mode: row.mode as TransformMetricSample["mode"],
+      intensity: row.intensity as TransformMetricSample["intensity"],
+      outcome: row.outcome as TransformMetricSample["outcome"],
       providerFailure: row.providerFailure,
       failureCode: row.failureCode ?? undefined,
+      provider: (row.provider ?? undefined) as TransformMetricSample["provider"],
+      requestedModel: row.requestedModel ?? undefined,
+      resolvedModel: row.resolvedModel ?? undefined,
+      routingTier: (row.routingTier ?? undefined) as TransformMetricSample["routingTier"],
+      complexityBucket: (row.complexityBucket ?? undefined) as TransformMetricSample["complexityBucket"],
+      estimatedInputTokens: row.estimatedInputTokens ?? undefined,
+      actualInputTokens: row.actualInputTokens ?? undefined,
+      actualOutputTokens: row.actualOutputTokens ?? undefined,
+      reasoningTokens: row.reasoningTokens ?? undefined,
+      cachedTokens: row.cachedTokens ?? undefined,
+      costUsd: row.costUsd ?? undefined,
+      fallbackUsed: row.fallbackUsed,
     }));
     return buildSnapshot(durableSamples, "fleet-24h", 24 * 60);
   } catch (error) {

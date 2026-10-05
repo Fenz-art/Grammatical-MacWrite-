@@ -64,4 +64,12 @@ describe("runSemanticGuard", () => {
     expect(result.accepted).toBe(true);
     expect(result.checks.find(check => check.dimension === "entity-context")?.preserved).toBe(true);
   });
+
+  it("does not treat Markdown prose after a fenced code block as protected inline code", () => {
+    const source = "## Change\n\nThis PR improve retry copy.\n\nRun `pnpm test`.\n\n```ts\nconst id = \"MAC-42\";\n```\n\nSee the release notes.";
+    const candidate = "## Change\n\nThis PR improves retry copy.\n\nRun `pnpm test`.\n\n```ts\nconst id = \"MAC-42\";\n```\n\nSee the release notes.";
+    const result = runSemanticGuard(source, candidate, ["pnpm test"]);
+    expect(result.accepted).toBe(true);
+    expect(result.checks.find(check => check.dimension === "code")?.preserved).toBe(true);
+  });
 });

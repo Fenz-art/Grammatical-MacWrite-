@@ -154,3 +154,31 @@
 - [x] Document production SLOs, alert thresholds, incident response, error-budget policy, and data-handling boundaries.
 - [x] Add focused P0 regression coverage and run tests, TypeScript validation, production build, and live transformation verification.
 - [x] Save and deliver the production-hardening checkpoint.
+
+- [x] Write a comprehensive Grammatical product and platform overview covering purpose, origin, goals, evolution, user value, capabilities, and boundaries.
+- [x] Document the complete Grammatical architecture, request/stream execution lifecycle, semantic-safety pipeline, persistence, observability, and operational controls.
+- [x] Review the documentation against the implemented code and clearly distinguish current capabilities from deferred P1 work.
+- [x] Deliver the final implementation-grounded Grammatical documentation package.
+
+- [x] Define production-grade AI regression taxonomy, semantic invariants, fixtures, and release gates.
+- [x] Add deterministic semantic, Unicode, structure, stream, queue, review, and export regression coverage.
+- [x] Add adversarial provider, prompt-injection, abuse, auth, quota, circuit-breaker, deadline, and telemetry failure-injection coverage.
+- [x] Add benchmark, load, soak, browser, and staged-environment validation specifications with measurable thresholds.
+- [x] Run the validation suite, review failures, and publish the production-grade test package.
+
+- [x] Write a complete GitHub-ready README.md covering setup, usage, features, architecture, testing, operations, limitations, and contribution guidance.
+- [x] Write repository description, topic suggestions, and multiple conventional commit-message options for Grammatical.
+- [x] Review the GitHub documentation for implementation accuracy, clarity, and safe production claims.
+- [x] Publish and deliver the GitHub documentation package.
+
+- [x] Reproduce ineffective transformations independently across Proofread, Improve, Natural, and Rewrite and capture request/error classes without storing user text.
+- [x] Trace client submission, tRPC/SSE transport, admission, provider invocation, semantic guard, and output-state failures to verified root causes.
+- [x] Fix every confirmed transformation blocker and add focused regression coverage for each root cause.
+- [x] Run full tests, TypeScript validation, production build, and live four-mode transformation verification.
+- [x] Publish the repaired transformation release and document any remaining limitations.
+
+- [x] Reproduce malformed transform-stream events and authenticated API query fetch failures without retaining account or user text data.
+- [x] Trace SSE frame boundaries, tRPC serialization, auth headers/cookies, and query lifecycle to verified root causes.
+- [x] Fix malformed stream parsing and API fetch resilience with focused regression tests.
+- [x] Run full tests, TypeScript validation, production build, and protected-session browser verification.
+- [ ] Publish the runtime-error correction and document exact causes and limits.
