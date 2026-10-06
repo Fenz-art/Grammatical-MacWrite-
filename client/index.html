@@ -20,10 +20,21 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
-    <script
-      defer
-      src="%VITE_ANALYTICS_ENDPOINT%/umami"
-      data-website-id="%VITE_ANALYTICS_WEBSITE_ID%"></script>
+    <script type="module">
+      const endpoint = import.meta.env.VITE_ANALYTICS_ENDPOINT;
+      const websiteId = import.meta.env.VITE_ANALYTICS_WEBSITE_ID;
+
+      if (endpoint && websiteId) {
+        const analyticsUrl = new URL("/umami", endpoint);
+        if (analyticsUrl.protocol === "https:" || analyticsUrl.hostname === "localhost") {
+          const analytics = document.createElement("script");
+          analytics.defer = true;
+          analytics.src = analyticsUrl.href;
+          analytics.dataset.websiteId = websiteId;
+          document.head.append(analytics);
+        }
+      }
+    </script>
   </body>
 
 </html>

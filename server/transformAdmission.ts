@@ -96,9 +96,19 @@ export async function admitTransformRequest(userOpenId: string, requestId: strin
         },
       });
       return { allowed: true, lease: { requestId, userOpenId, queueWaitMs: Date.now() - startedAt } } as const;
-    });
+    }, { maxWait: 10_000, timeout: 15_000 });
   } catch (error) {
-    console.error("[Transform admission] Control-plane transaction failed", error instanceof Error ? error.name : "unknown");
+    if (error && typeof error === "object" && "code" in error) {
+      const prismaError = error as { code?: unknown; meta?: { modelName?: unknown; code?: unknown }; name?: unknown };
+      console.error("[Transform admission] Control-plane transaction failed", {
+        name: typeof prismaError.name === "string" ? prismaError.name : "unknown",
+        code: typeof prismaError.code === "string" ? prismaError.code : undefined,
+        databaseCode: typeof prismaError.meta?.code === "string" ? prismaError.meta.code : undefined,
+        model: typeof prismaError.meta?.modelName === "string" ? prismaError.meta.modelName : undefined,
+      });
+    } else {
+      console.error("[Transform admission] Control-plane transaction failed", error instanceof Error ? error.name : "unknown");
+    }
     return { allowed: false, code: "SERVICE_UNAVAILABLE", retryAfterMs: 5_000 };
   }
 }

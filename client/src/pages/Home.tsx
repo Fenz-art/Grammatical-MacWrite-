@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/menubar";
 import { parseTerminalInput } from "@shared/commands";
 import { trpc } from "@/lib/trpc";
+import { transformationErrorMessage } from "@/lib/transformationErrorMessage";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { SemanticAnalysisPanel } from "@/components/SemanticAnalysisPanel";
 import { TransformSettingsPanel } from "@/components/TransformSettingsPanel";
@@ -39,6 +40,7 @@ import {
   Expand,
   FilePlus2,
   HelpCircle,
+  LogOut,
   Minimize2,
   Moon,
   MoreHorizontal,
@@ -473,21 +475,7 @@ export default function Home() {
     if (event.type === "error") {
       const failedBlock = activeBlock;
       if (failedBlock) setEntries(previous => previous.map(entry => entry.kind === "paste-block" && entry.block.id === failedBlock.id ? { ...entry, status: "error" } : entry));
-      const copy = event.code === "CANCELLED"
-        ? "Transformation cancelled. Your input is preserved above."
-        : event.code === "AUTH_REQUIRED"
-          ? "Your session expired. Sign in again before retrying; your input is preserved."
-          : event.code === "RATE_LIMITED"
-            ? "Your transformation quota is temporarily exhausted. Try again after the stated limit window."
-            : event.code === "CAPACITY_EXHAUSTED"
-              ? "Grammatical is protecting active work from a traffic burst. Try again shortly."
-              : event.code === "BUDGET_EXHAUSTED" || event.code === "PROVIDER_CIRCUIT_OPEN"
-                ? "The provider safety guard is temporarily active. Your input is preserved; try again later."
-                : event.code === "PROVIDER_NOT_CONFIGURED"
-                  ? "LLM provider configuration is incomplete. Configure LLM_API_KEY and LLM_MODEL, plus a key and model for any enabled fallback; your input is preserved."
-                : event.code === "DEADLINE_EXCEEDED"
-                  ? "The provider did not complete within the safety deadline. Your input is preserved."
-                  : "This block could not be transformed after automatic retries. Your input is preserved.";
+      const copy = transformationErrorMessage(event.code);
       setEntries(previous => [...previous.filter(entry => entry.kind !== "processing" || entry.id !== event.requestId), { id: crypto.randomUUID(), kind: "error", text: failedBlock ? `Block ${failedBlock.index + 1}: ${copy}` : copy, blockId: failedBlock?.id, retry: event.retryable ? { text: request.text, mode: request.mode, block: failedBlock ?? undefined } : undefined }]);
       activeRequestRef.current = null;
       setActiveRequest(null);
@@ -628,7 +616,7 @@ export default function Home() {
           <MenubarMenu><MenubarTrigger>View</MenubarTrigger><MenubarContent><MenubarItem onSelect={() => setReviewSettingsOpen(true)}><BookOpenCheck size={14} /> Document review setup</MenubarItem><MenubarItem onSelect={() => setIntensityOpen(true)}><Settings2 size={14} /> Transformation intensity</MenubarItem><MenubarItem onSelect={() => { setDashboardOpen(true); void metricsQuery.refetch(); }}><BarChart3 size={14} /> Benchmark dashboard</MenubarItem><MenubarSeparator /><MenubarItem onSelect={() => setReduceMotion(value => !value)}><Moon size={14} /> {reduceMotion ? "Enable motion" : "Reduce motion"}</MenubarItem></MenubarContent></MenubarMenu>
           <MenubarMenu><MenubarTrigger>Help</MenubarTrigger><MenubarContent><MenubarItem onSelect={() => append({ id: crypto.randomUUID(), kind: "help", text: "Commands: clear · mode <name> · copy-output · help" })}><HelpCircle size={14} /> Command guide</MenubarItem></MenubarContent></MenubarMenu>
         </Menubar>
-        <div className="system-status"><span className="privacy-status"><ShieldCheck size={14} /> Semantic guard on</span>{auth.isAuthenticated ? <span className="privacy-status">Protected session</span> : <AuthDialog open={authDialogOpen} onOpenChange={setAuthDialogOpen} reason={authReason} context={authReason === "transform" ? { mode: TRANSFORMATION_MODE_LABELS[activeMode], title: documentTitle, characters: draft.length } : undefined} trigger={<button className="auth-status-button" onClick={() => setAuthReason("transform")}>Sign in to transform</button>} />}<span><Wifi size={14} /></span><span className="clock"><Command size={13} /> {clockText(clock)}</span></div>
+        <div className="system-status"><span className="privacy-status"><ShieldCheck size={14} /> Semantic guard on</span>{auth.isAuthenticated ? <span className="privacy-status">Protected session</span> : <AuthDialog open={authDialogOpen} onOpenChange={setAuthDialogOpen} reason={authReason} context={authReason === "transform" ? { mode: TRANSFORMATION_MODE_LABELS[activeMode], title: documentTitle, characters: draft.length } : undefined} trigger={<button className="auth-status-button" onClick={() => setAuthReason("transform")}>Sign in to transform</button>} />}<span><Wifi size={14} /></span><span className="clock"><Command size={13} /> {clockText(clock)}</span>{auth.isAuthenticated && <button className="sign-out-button" onClick={() => void auth.logout().catch(() => toast.error("Sign out failed. Please try again."))} disabled={auth.loading} aria-label="Sign out" title="Sign out"><LogOut size={13} /><span>Sign out</span></button>}</div>
       </header>
 
       {historyOpen && (

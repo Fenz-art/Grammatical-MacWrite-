@@ -33,7 +33,10 @@ function findTransformationEvent(payload: unknown): TransformationStreamEvent | 
 }
 
 export function parseTransformStreamFrame(frame: string): TransformationStreamEvent | null {
-  const data = frame.split(/\r?\n/).filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
+  const lines = frame.split(/\r?\n/);
+  const eventName = lines.find(line => line.startsWith("event:"))?.slice(6).trim();
+  if (eventName === "connected" || eventName === "return") return null;
+  const data = lines.filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
   if (!data) return null;
   return parseTransformStreamPayload(data);
 }

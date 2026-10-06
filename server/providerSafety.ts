@@ -81,7 +81,7 @@ export async function reserveProviderAttempt(providerName = DEFAULT_PROVIDER_KEY
         });
       }
       return { allowed: true } as const;
-    });
+    }, { maxWait: 10_000, timeout: 15_000 });
   } catch (error) {
     console.error("[Provider safety] Reservation failed", error instanceof Error ? error.name : "unknown");
     return { allowed: false, error: new TransformProviderSafetyError("PROVIDER_CIRCUIT_OPEN", true, 5_000) };
@@ -124,7 +124,7 @@ export async function recordProviderOutcome(success: boolean, providerName = DEF
       } else {
         await tx.providerCircuitState.create({ data: { providerKey: providerName, consecutiveFailures: failures, openUntil, updatedAt: now } });
       }
-    });
+    }, { maxWait: 10_000, timeout: 15_000 });
   } catch (error) {
     console.error("[Provider safety] Outcome recording failed", error instanceof Error ? error.name : "unknown");
   }
