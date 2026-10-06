@@ -4,7 +4,8 @@
   "functions": {
     "server.ts": {
       "maxDuration": 300,
-      "supportsCancellation": true
+      "supportsCancellation": true,
+      "includeFiles": "public/**"
     }
   }
 }
