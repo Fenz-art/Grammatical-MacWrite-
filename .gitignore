@@ -6,6 +6,7 @@
 dist/
 build/
 /public/
+server/vercel-app.js
 *.dist
 
 # Environment variables
@@ -116,3 +117,5 @@ temp/
 # Manus runtime artifacts (auto-generated, not part of source)
 client/public/__manus__/
 .project-config.json
+.vercel
+.env*
