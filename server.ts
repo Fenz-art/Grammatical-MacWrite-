@@ -1,7 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import path from "node:path";
-import { createApp } from "./server/_core/app";
+import { createApp } from "./dist/vercel-app.js";
 
 const app = createApp(express());
 
